@@ -13,6 +13,7 @@ from AWSScout2.services.elasticache import ElastiCacheConfig
 from AWSScout2.services.elb import ELBConfig
 from AWSScout2.services.elbv2 import ELBv2Config
 from AWSScout2.services.emr import EMRConfig
+from AWSScout2.services.resourcegroupstaggingapi import ResourceGroupsTaggingApiConfig
 from AWSScout2.services.iam import IAMConfig
 from AWSScout2.services.awslambda import LambdaConfig
 from AWSScout2.services.rds import RDSConfig
@@ -57,6 +58,7 @@ class ServicesConfig(object):
         self.awslambda = LambdaConfig(metadata['compute']['awslambda'], thread_config)
         self.redshift = RedshiftConfig(metadata['database']['redshift'], thread_config)
         self.rds = RDSConfig(metadata['database']['rds'], thread_config)
+        self.resourcegroupstaggingapi = ResourceGroupsTaggingApiConfig(metadata['api']['resourcegroupstaggingapi'], thread_config)
         self.route53 = Route53Config(thread_config)
         self.route53domains = Route53DomainsConfig(thread_config)
         self.s3 = S3Config(thread_config)
