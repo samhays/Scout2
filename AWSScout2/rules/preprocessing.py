@@ -335,10 +335,19 @@ def __get_role_info(aws_config, attribute_name, attribute_value):
     return iam_role_info
 
 def process_vpc_peering_connections_callback(aws_config, current_config, path, current_path, pc_id, callback_args):
+    """
+    Create a list of peering connection IDs in each VPC
 
-    # Create a list of peering connection IDs in each VPC
+    :param aws_config:
+    :param current_config:
+    :param path:
+    :param current_path:
+    :param pc_id:
+    :param callback_args:
+    :return:
+    """
     info = 'AccepterVpcInfo' if current_config['AccepterVpcInfo']['OwnerId'] == aws_config['aws_account_id'] else 'RequesterVpcInfo'
-    region = current_path[1]
+    region = current_path[current_path.index('regions')+1]
     vpc_id = current_config[info]['VpcId']
     target = aws_config['services']['vpc']['regions'][region]['vpcs'][vpc_id]
     manage_dictionary(target, 'peering_connections', [])
@@ -409,13 +418,16 @@ def match_security_groups_and_resources_callback(aws_config, current_config, pat
             else:
                 sg['used_by'][service]['resource_type'][resource_type].append(resource_id)
     except Exception as e:
-        region = current_path[3]
-        vpc_id = current_path[5]
-        if vpc_id == ec2_classic and resource_type == 'elbs':
+        if resource_type in ['elbs', 'functions']:
             pass
         else:
-            printError('Failed to parse %s in %s in %s' % (resource_type, vpc_id, region))
-            printException(e)
+            region = current_path[3]
+            vpc_id = current_path[5]
+            if vpc_id == ec2_classic:
+                pass
+            else:
+                printError('Failed to parse %s in %s in %s' % (resource_type, vpc_id, region))
+                printException(e)
 
 def merge_route53_and_route53domains(aws_config):
     if 'route53domains' not in aws_config['services']:
@@ -505,12 +517,12 @@ def parse_elb_policies_callback(aws_config, current_config, path, current_path, 
             policy['ciphers'] = ciphers
             # TODO: pop ?
 
-def sort_vpc_flow_logs_callback(vpc_config, current_config, path, current_path, flow_log_id, callback_args):
+def sort_vpc_flow_logs_callback(aws_config, current_config, path, current_path, flow_log_id, callback_args):
     attached_resource = current_config['ResourceId']
     if attached_resource.startswith('vpc-'):
-        vpc_path = combine_paths(current_path[0:2], ['vpcs', attached_resource])
+        vpc_path = combine_paths(current_path[0:4], ['vpcs', attached_resource])
         try:
-            attached_vpc = get_object_at(vpc_config, vpc_path)
+            attached_vpc = get_object_at(aws_config, vpc_path)
         except Exception as e:
             printDebug('It appears that the flow log %s is attached to a resource that was previously deleted (%s).' % (flow_log_id, attached_resource))
             return
@@ -522,13 +534,11 @@ def sort_vpc_flow_logs_callback(vpc_config, current_config, path, current_path, 
             if flow_log_id not in attached_vpc['subnets'][subnet_id]['flow_logs']:
                 attached_vpc['subnets'][subnet_id]['flow_logs'].append(flow_log_id)
     elif attached_resource.startswith('subnet-'):
-        all_vpcs = get_object_at(vpc_config, combine_paths(current_path[0:2], ['vpcs']))
-        for vpc in all_vpcs:
-            if attached_resource in all_vpcs[vpc]['subnets']:
-                manage_dictionary(all_vpcs[vpc]['subnets'][attached_resource], 'flow_logs', [])
-                if flow_log_id not in all_vpcs[vpc]['subnets'][attached_resource]['flow_logs']:
-                    all_vpcs[vpc]['subnets'][attached_resource]['flow_logs'].append(flow_log_id)
-                break
+        subnet_path = combine_paths(current_path[0:4], ['vpcs', subnet_map[attached_resource]['vpc_id'], 'subnets', attached_resource])
+        subnet = get_object_at(aws_config, subnet_path)
+        manage_dictionary(subnet, 'flow_logs', [])
+        if flow_log_id not in subnet['flow_logs']:
+            subnet['flow_logs'].append(flow_log_id)
     else:
         printError('Resource %s attached to flow logs is not handled' % attached_resource)
 
@@ -536,7 +546,7 @@ def go_to_and_do(aws_config, current_config, path, current_path, callback, callb
     """
     Recursively go to a target and execute a callback
 
-    :param aws_config:                  A
+    :param aws_config:
     :param current_config:
     :param path:
     :param current_path:
@@ -589,7 +599,7 @@ def new_go_to_and_do(aws_config, current_config, path, current_path, callbacks):
     """
     Recursively go to a target and execute a callback
 
-    :param aws_config:                  A
+    :param aws_config:
     :param current_config:
     :param path:
     :param current_path:
@@ -692,23 +702,34 @@ def security_group_to_attack_surface(aws_config, attack_surface_config, public_i
             sg_path.append('rules')
             sg_path.append('ingress')
             ingress_rules = get_object_at(aws_config, sg_path)
-            public_ip_grants = {}
-            for p in ingress_rules['protocols']:
-                for port in ingress_rules['protocols'][p]['ports']:
-                  if len(listeners) == 0 and 'cidrs' in ingress_rules['protocols'][p]['ports'][port]:
-                      manage_dictionary(attack_surface_config[public_ip]['protocols'], p, {'ports': {}})
-                      manage_dictionary(attack_surface_config[public_ip]['protocols'][p]['ports'], port, {'cidrs': []})
-                      attack_surface_config[public_ip]['protocols'][p]['ports'][port]['cidrs'] += ingress_rules['protocols'][p]['ports'][port]['cidrs']
-                  else:
-                    ports = port.split('-')
-                    if len(ports) > 1:
-                        port_min = int(ports[0])
-                        port_max = int(ports[1])
-                    else:
-                        port_min = port_max = port
-                    for listener in listeners:
-                        listener = int(listener)
-                        if listener > port_min and listener < port_max and 'cidrs' in ingress_rules['protocols'][p]['ports'][port]:
-                            manage_dictionary(attack_surface_config[public_ip]['protocols'], p, {'ports': {}})
-                            manage_dictionary(attack_surface_config[public_ip]['protocols'][p]['ports'], str(listener), {'cidrs': []})
-                            attack_surface_config[public_ip]['protocols'][p]['ports'][str(listener)]['cidrs'] += ingress_rules['protocols'][p]['ports'][port]['cidrs']
+            if 'protocols' in ingress_rules:
+                for p in ingress_rules['protocols']:
+                    for port in ingress_rules['protocols'][p]['ports']:
+                      if len(listeners) == 0 and 'cidrs' in ingress_rules['protocols'][p]['ports'][port]:
+                          manage_dictionary(attack_surface_config[public_ip]['protocols'],
+                                            p,
+                                            {'ports': {}})
+                          manage_dictionary(attack_surface_config[public_ip]['protocols'][p]['ports'],
+                                            port,
+                                            {'cidrs': []})
+                          attack_surface_config[public_ip]['protocols'][p]['ports'][port]['cidrs'] += \
+                              ingress_rules['protocols'][p]['ports'][port]['cidrs']
+                      else:
+                        ports = port.split('-')
+                        if len(ports) > 1:
+                            port_min = int(ports[0])
+                            port_max = int(ports[1])
+                        else:
+                            port_min = port_max = port
+                        for listener in listeners:
+                            listener = int(listener)
+                            if listener > port_min and listener < port_max and \
+                                    'cidrs' in ingress_rules['protocols'][p]['ports'][port]:
+                                manage_dictionary(attack_surface_config[public_ip]['protocols'],
+                                                  p,
+                                                  {'ports': {}})
+                                manage_dictionary(attack_surface_config[public_ip]['protocols'][p]['ports'],
+                                                  str(listener),
+                                                  {'cidrs': []})
+                                attack_surface_config[public_ip]['protocols'][p]['ports'][str(listener)]['cidrs'] += \
+                                    ingress_rules['protocols'][p]['ports'][port]['cidrs']
